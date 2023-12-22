@@ -10,10 +10,10 @@ void handleSystemCallError(std::string errorMsg);
 int createClientSocket(const std::string &serverIP, int serverPort);
 void receiveMessages(int bytesRead, int clientSocket, char buffer[1024], int bufferSize);
 void sendMessage(int clientSocket, char outMessage[1024], int bufferSize, const std::string &username);
+const int bufferSize = 10240;
 
 int main()
 {
-    const int bufferSize = 10240;
     char buffer[bufferSize];
     char outMessage[bufferSize];
 
@@ -93,7 +93,7 @@ int createClientSocket(const std::string &serverIP, int serverPort)
     return clientSocket;
 }
 
-void receiveMessages(int bytesRead, int clientSocket, char buffer[10240], int bufferSize)
+void receiveMessages(int bytesRead, int clientSocket, char buffer[bufferSize], int bufferSize)
 {
     while (true)
     {
@@ -106,7 +106,7 @@ void receiveMessages(int bytesRead, int clientSocket, char buffer[10240], int bu
     }
 }
 
-void sendMessage(int clientSocket, char outMessage[10240], int bufferSize, const std::string &username)
+void sendMessage(int clientSocket, char outMessage[bufferSize], int bufferSize, const std::string &username)
 {
     while (true)
     {
