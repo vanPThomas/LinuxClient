@@ -13,7 +13,7 @@
 
 void handleSystemCallError(std::string errorMsg);
 int createClientSocket(const std::string &serverIP, int serverPort);
-void receiveMessages(int bytesRead, int clientSocket, char buffer[1024], int bufferSize, std::string password);
+void receiveMessages(int clientSocket, int bufferSize, std::string password);
 void sendMessage(int clientSocket, char outMessage[1024], int bufferSize, const std::string &username, std::string password);
 std::string readEncryptionKeyFromFile(const std::string &filename, std::string password);
 std::string decryptData(const std::string &data, const std::string &key);
@@ -57,7 +57,7 @@ int main()
         std::cerr << "Error receiving message\n";
     }
 
-    std::thread first(receiveMessages, bytesRead, clientSocket, buffer, bufferSize, encrPSWD);
+    std::thread first(receiveMessages, clientSocket, bufferSize, encrPSWD);
     std::thread second(sendMessage, clientSocket, outMessage, bufferSize, username, encrPSWD);
 
     first.join();
@@ -108,15 +108,16 @@ int createClientSocket(const std::string &serverIP, int serverPort)
 }
 
 // receive messages from server
-void receiveMessages(int bytesRead, int clientSocket, char buffer[bufferSize], int bufferSize, std::string password)
+void receiveMessages(int clientSocket, int bufferSize, std::string password)
 {
+    char receiveBuffer[bufferSize];
+
     while (true)
     {
-        bytesRead = recv(clientSocket, buffer, bufferSize, 0);
+        int bytesRead = recv(clientSocket, receiveBuffer, bufferSize, 0);
         if (bytesRead > 0)
         {
-            // buffer[bytesRead] = '\0';
-            std::string encryptedData(buffer, bytesRead); // Create a string with the received data
+            std::string encryptedData(receiveBuffer, bytesRead); // Create a string with the received data
             std::string decryptedData = decryptData(encryptedData, password);
             std::cout << encryptedData << "\n";
         }
@@ -140,106 +141,85 @@ void sendMessage(int clientSocket, char outMessage[bufferSize], int bufferSize, 
         {
             userMessage = username + ": " + userMessage;
 
-            userMessage = encryptData(userMessage, password);
+            // userMessage = encryptData(userMessage, password);
 
-            std::cout << userMessage << std::endl;
+            // std::cout << userMessage << std::endl;
 
             send(clientSocket, userMessage.c_str(), userMessage.length() + 1, 0);
         }
     }
 }
 
-// decrypts data using a given password
 std::string decryptData(const std::string &data, const std::string &key)
 {
-    EVP_CIPHER_CTX *ctx;
-    ctx = EVP_CIPHER_CTX_new();
+    // Initialization Vector (IV) should be the same size as the block size
+    std::string iv = key.substr(0, 16);
 
-    if (!EVP_DecryptInit_ex(ctx, EVP_aes_128_cbc(), nullptr, reinterpret_cast<const unsigned char *>(key.c_str()), nullptr))
-    {
-        std::cerr << "Error initializing decryption." << std::endl;
-        exit(EXIT_FAILURE);
-    }
+    // Set up the OpenSSL decryption context
+    EVP_CIPHER_CTX *ctx = EVP_CIPHER_CTX_new();
+    EVP_CIPHER_CTX_init(ctx);
 
+    // Initialize the decryption operation with AES 256 CBC and the provided key and IV
+    EVP_DecryptInit_ex(ctx, EVP_aes_256_cbc(), NULL, reinterpret_cast<const unsigned char *>(key.c_str()), reinterpret_cast<const unsigned char *>(iv.c_str()));
+
+    // Provide the message to be decrypted
     int len;
-    int plaintextLen;
+    int plaintext_len;
+    unsigned char *plaintext = new unsigned char[data.length() + EVP_CIPHER_block_size(EVP_aes_256_cbc())];
 
-    // Dynamically allocate memory based on the size of the ciphertext
-    std::string plaintext(data.size() + AES_BLOCK_SIZE, '\0');
+    // Perform the decryption
+    EVP_DecryptUpdate(ctx, plaintext, &len, reinterpret_cast<const unsigned char *>(data.c_str()), data.length());
+    plaintext_len = len;
 
-    if (!EVP_DecryptUpdate(ctx, reinterpret_cast<unsigned char *>(&plaintext[0]), &len, reinterpret_cast<const unsigned char *>(data.c_str()), data.size()))
-    {
-        std::cerr << "Error updating decryption." << std::endl;
-        exit(EXIT_FAILURE);
-    }
+    // Finalize the decryption
+    EVP_DecryptFinal_ex(ctx, plaintext + len, &len);
+    plaintext_len += len;
 
-    plaintextLen = len;
-
-    // Finalize the decryption, including handling any padding
-    if (!EVP_DecryptFinal_ex(ctx, reinterpret_cast<unsigned char *>(&plaintext[len]), &len))
-    {
-        // Check if the error is due to wrong final block length
-        unsigned long error = ERR_get_error();
-        if (ERR_GET_REASON(error) == EVP_R_WRONG_FINAL_BLOCK_LENGTH)
-        {
-            std::cerr << "Padding error. Ignoring." << std::endl;
-        }
-        else
-        {
-            std::cerr << "Error finalizing decryption." << std::endl;
-
-            // Print OpenSSL error information
-            char errorString[256];
-            ERR_error_string_n(error, errorString, sizeof(errorString));
-            std::cerr << "OpenSSL Error: " << errorString << std::endl;
-
-            exit(EXIT_FAILURE);
-        }
-    }
-
-    plaintextLen += len;
-
+    // Clean up the context
     EVP_CIPHER_CTX_free(ctx);
 
-    // Resize the string to the actual length of the decrypted data
-    plaintext.resize(plaintextLen);
+    // Convert the decrypted data to a string
+    std::string decryptedData(reinterpret_cast<char *>(plaintext), plaintext_len);
 
-    return plaintext;
+    // Clean up allocated memory
+    delete[] plaintext;
+
+    return decryptedData;
 }
 
-// encrypts data using a given password
 std::string encryptData(const std::string &data, const std::string &key)
 {
-    EVP_CIPHER_CTX *ctx;
-    ctx = EVP_CIPHER_CTX_new();
+    // Initialization Vector (IV) should be the same size as the block size
+    std::string iv = key.substr(0, 16);
 
-    if (!EVP_EncryptInit_ex(ctx, EVP_aes_128_cbc(), nullptr, reinterpret_cast<const unsigned char *>(key.c_str()), nullptr))
-    {
-        std::cerr << "Error initializing encryption." << std::endl;
-        exit(EXIT_FAILURE);
-    }
+    // Set up the OpenSSL encryption context
+    EVP_CIPHER_CTX *ctx = EVP_CIPHER_CTX_new();
+    EVP_CIPHER_CTX_init(ctx);
 
+    // Initialize the encryption operation with AES 256 CBC and the provided key and IV
+    EVP_EncryptInit_ex(ctx, EVP_aes_256_cbc(), NULL, reinterpret_cast<const unsigned char *>(key.c_str()), reinterpret_cast<const unsigned char *>(iv.c_str()));
+
+    // Provide the message to be encrypted
     int len;
-    int ciphertextLen;
-    std::string ciphertext(data.size() + AES_BLOCK_SIZE, '\0');
+    int ciphertext_len;
+    unsigned char *ciphertext = new unsigned char[data.length() + EVP_CIPHER_block_size(EVP_aes_256_cbc())];
 
-    if (!EVP_EncryptUpdate(ctx, reinterpret_cast<unsigned char *>(&ciphertext[0]), &len, reinterpret_cast<const unsigned char *>(data.c_str()), data.size()))
-    {
-        std::cerr << "Error updating encryption." << std::endl;
-        exit(EXIT_FAILURE);
-    }
+    // Perform the encryption
+    EVP_EncryptUpdate(ctx, ciphertext, &len, reinterpret_cast<const unsigned char *>(data.c_str()), data.length());
+    ciphertext_len = len;
 
-    ciphertextLen = len;
+    // Finalize the encryption
+    EVP_EncryptFinal_ex(ctx, ciphertext + len, &len);
+    ciphertext_len += len;
 
-    if (!EVP_EncryptFinal_ex(ctx, reinterpret_cast<unsigned char *>(&ciphertext[len]), &len))
-    {
-        std::cerr << "Error finalizing encryption." << std::endl;
-        exit(EXIT_FAILURE);
-    }
-
-    ciphertextLen += len;
-
+    // Clean up the context
     EVP_CIPHER_CTX_free(ctx);
 
-    return ciphertext.substr(0, ciphertextLen);
+    // Convert the encrypted data to a string
+    std::string encryptedData(reinterpret_cast<char *>(ciphertext), ciphertext_len);
+
+    // Clean up allocated memory
+    delete[] ciphertext;
+
+    return encryptedData;
 }
